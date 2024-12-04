@@ -13,7 +13,7 @@ import pyaudio
 """
 The steps indicated before the first class are for testing locally to ensure that the API keys are available and that they work properly.
 
-First Step: load OpenAI, AssemblyAI, and Elevenlabs API keys when testing locally.
+First Step: load OpenAI, WATSON, and Elevenlabs API keys when testing locally.
 - Note: you have to have saved your API keys in a .env file for this to work
 """
 
