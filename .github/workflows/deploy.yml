@@ -34,4 +34,4 @@ jobs:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         ELEVENLABS_KEY: ${{ secrets.ELEVENLABS_KEY }}
       run: |
-        python bot.py
+        python app.py
