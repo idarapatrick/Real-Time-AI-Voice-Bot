@@ -1,144 +1,134 @@
-import assemblyai as aai
+from setup_google_credentials import setup_google_credentials
 from openai import OpenAI
 from elevenlabs import stream
 from elevenlabs.client import ElevenLabs
+from google.cloud import speech
 import os
 from dotenv import load_dotenv
-import json
-import websocket
 import threading
 import pyaudio
 
+# Authenticate your Google credentials
+setup_google_credentials()
 
-"""
-The steps indicated before the first class are for testing locally to ensure that the API keys are available and that they work properly.
+load_dotenv()
 
-First Step: load OpenAI, WATSON, and Elevenlabs API keys when testing locally.
-- Note: you have to have saved your API keys in a .env file for this to work
-"""
-
-
-load_dotenv(dotenv_path="API-Keys.env") #chnage the file path and add the path to the .env file that contains your API keys
-
-#Fetch keys from environemnt variables
-WATSON_API_KEY = os.getenv("WATSON_API_KEY")
-WATSON_URL = os.getenv("WATSON_URL")
+# Fetch keys from environment variables
 OPENAI_KEY = os.getenv("OPENAI_KEY")
 ELEVENLABS_KEY = os.getenv("ELEVENLABS_KEY")
 
-if not all([WATSON_API_KEY, WATSON_URL, OPENAI_KEY, ELEVENLABS_KEY]):
+if not all([OPENAI_KEY, ELEVENLABS_KEY]):
     raise EnvironmentError("One or more API keys are missing! Load from your environment variables or create and add the API keys to a .env file")
 
 class AI_Assistant:
     def __init__(self):
-        #set the API keys
-        self.watson_api_key = WATSON_API_KEY
-        self.watson_url = WATSON_URL
-        self.instance_id = os.getenv("WATSON_INSTANCE_ID")
-        self.watson_location = os.getenv("WATSON_LOCATION")
-        self.openai_client = OpenAI(api_key = OPENAI_KEY)
-        self.elevenlabs_client = ElevenLabs(api_key= ELEVENLABS_KEY)
-        
-        
-        #set the initial prompt
-        self.interaction = [{"role":"system", "content":"""You are a successful narrator. You have people coming to you to ask for poetic stories where you narrate like an expert poet. Sound narrative and poetic.
-                             """}]
-        
-                
+        # Initialize clients
+        self.openai_client = OpenAI(api_key=OPENAI_KEY)
+        self.elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_KEY)
+        self.speech_client = speech.SpeechClient()
+
+        # Initialize variables
+        self.interaction = [{"role": "system", "content": """You are a Learning Assistant. You have students coming to you to help them better understand certain topics. Use the Feynman technique to help them master. Remember to keep your response concise. Reject any topic that does not relate to the student learning something by returning this response 'sorry! I cannot help with that. Tell me a topic you would like to learn and I can help you understand it better'"""}]
+        self.audio_stream = None
+        self.stop_stream_flag = threading.Event()
+
     def generate_audio(self, text):
-        self.interaction.append({"role":"assistant", "content": text})
-        print(f"\n AI Guide: {text}")
-            
-        audio_stream = self.elevenlabs_client.generate(text = text, voice = "Brian", stream = True)
-            
+        self.interaction.append({"role": "assistant", "content": text})
+        print(f"\nLearning Assistant: {text}")
+
+        audio_stream = self.elevenlabs_client.generate(text=text, voice="Bill", stream=True)
         stream(audio_stream)
-        
-    def generate_ai_response(self, transcript_text): # accepts the current 
-        self.stop_transciption()
-        self.interaction.append({"role":"user", "content": transcript_text})
-        print(f"\n User: {transcript_text}", end ="\n")
-        
-        # generate response with OpenAI
+
+    def generate_ai_response(self, transcript_text):
+        self.stop_transcription()
+        self.interaction.append({"role": "user", "content": transcript_text})
+        print(f"\nUser: {transcript_text}", end="\n")
+
+        # Generate response with OpenAI
         response = self.openai_client.chat.completions.create(
-            model = "gpt-4",
-            messages= self.interaction
+            model="gpt-4",
+            messages=self.interaction
         )
-        
-        self.generate_audio(response.choices[0].messages.content)
-        self.start_transcription() #Let the user speak again
-        
-        print(f"\nReal-time transcription: ", end = "\n")
-        
-        
+
+        self.generate_audio(response.choices[0].message.content)
+        self.start_transcription()  # Let the user speak again
+        print("\nReal-time transcription: ", end="\n")
+
     def start_transcription(self):
-        def on_message(ws, message):
-            response = json.loads(message)
-            results = response.get("results", [{}])
-            if results:
-                transcript = results[0].get("alternatives", [{}])[0].get(transcript, "")
-                print(f"Transcribed Text: {transcript}")
-    
-        def on_error(self, error):
-            print(f"Transcription Error: {error}")
+        def audio_stream_generator():
+            """Streams microphone audio to the queue."""
+            p = pyaudio.PyAudio()
+            stream = p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=16000,
+                input=True,
+                frames_per_buffer=1024,
+            )
+            self.audio_stream = stream
+
+            try:
+                while not self.stop_stream_flag.is_set():
+                    data = stream.read(1024, exception_on_overflow=False)
+                    yield data
+            finally:
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
+
+        def recognize_stream():
+            """Handles the real-time transcription."""
+            audio_generator = audio_stream_generator()
+            for response in responses:
+                if response.results:
+                    result = response.results[0]
+                    if result.alternatives:
+                        transcript = result.alternatives[0].transcript
+                        print(f"Transcribed Text: {transcript}")
             
-        def on_close(ws, close_status_code, code_msg):
-            print("Websocket closed")        
-            
-        def on_open(ws):
-            def stream_audio():
-                # Initialize PyAudio
-                p = pyaudio.PyAudio()
-                stream = p.open(format=pyaudio.paInt16, 
-                                channels = 1,
-                                rate = 16000,
-                                input = True,
-                                frames_per_buffer = 1024)
-                
-                # Send a start message to Watson
-                ws.send(json.dumps({
-                    "action": "start",
-                    "content-type": "audio/l16;rate=16000",
-                    "interim_results": True
-                }))
-                print("Streaming audio...")
-                
-                try:
-                    while True:
-                        data = stream.read(1024, ezception_on_overflow = False)
-                        ws.send(data, websocket.ABNF.OPCODE_BINARY)
-                except KeyboardInterrupt:
-                    print("Stopping the audio stream.")
-                finally:
-                    # Send stop signal
-                    ws.send(json.dumps({"action": "stop"}))
-                    stream.stop_stream()
-                    stream.close()
-                    p.terminate()
-                    
-            threading.Thread(target=stream_audio).start()
-        
-        # Connecting to Watson WebSocket
-        ws_url = f"wss://api.{self.watson_location}.speech-to-text.watson.cloud.ibm.com/instances/{self.instance_id}/v1/recognize?access_token={self.watson_api_key}"
-        ws = websocket.WebSocketApp(
-            ws_url,
-            on_message = on_message,
-            on_error=on_error,
-            on_close=on_close
-        )
-        websocket.enableTrace(True)
-        ws.on_open = on_open
-        ws.run_forever()
-                
-    
-    def stop_transciption(self):
-        if self.transcriber:
-            self.transcriber.close()
-            self.transcriber = None    
-            
-            
-greeting = """Thank you for seeking my services today! I am a poetic narrator. Kindly tell me what kind of story you need me to narrate"""
+                        # Process final transcriptions only
+                        if result.is_final:
+                            self.generate_ai_response(transcript)
+                        requests = (
+                            speech.StreamingRecognizeRequest(audio_content=chunk)
+                            for chunk in audio_generator
+                        )
+
+            streaming_config = speech.StreamingRecognitionConfig(
+                config=speech.RecognitionConfig(
+                    encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                    sample_rate_hertz=16000,
+                    language_code="en-US",
+                ),
+                interim_results=True,
+            )
+
+            responses = self.speech_client.streaming_recognize(
+                config=streaming_config,
+                requests=requests
+            )
+
+            for response in responses:
+                if response.results:
+                    result = response.results[0]
+                    if result.alternatives:
+                        transcript = result.alternatives[0].transcript
+                        print(f"Transcribed Text: {transcript}")
+                        if result.is_final:
+                            self.generate_ai_response(transcript)
+
+        # Start recognition in a new thread
+        transcription_thread = threading.Thread(target=recognize_stream)
+        transcription_thread.start()
+
+    def stop_transcription(self):
+        self.stop_stream_flag.set()
+        if self.audio_stream:
+            self.audio_stream.close()
+
+
+greeting = """Thank you for seeking my services today! I am your Learning Assistant. Pick a topic you would like to master and I will use the Feynman technique to make it easier for you to understand"""
 
 ai_assistant = AI_Assistant()
 ai_assistant.generate_audio(greeting)
-ai_assistant.start_transcription()        
-            
+ai_assistant.start_transcription()
